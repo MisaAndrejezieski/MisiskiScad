@@ -96,14 +96,15 @@ def reconstruct_visual_hull(image_paths, width, depth, height, resolution=64, th
     """Reconstrui um casco visual fechado; as imagens devem ser vistas ortograficas alinhadas."""
     if set(image_paths) != set(VIEW_NAMES):
         raise ValueError("Selecione uma imagem para cada uma das seis vistas.")
-    if not all(float(value) > 0 for value in (width, depth, height)):
+    dimensions = np.asarray((width, depth, height), dtype=float)
+    if not np.all(np.isfinite(dimensions)) or np.any(dimensions <= 0):
         raise ValueError("Largura, profundidade e altura devem ser maiores que zero.")
     if not 16 <= int(resolution) <= 128:
         raise ValueError("A resolucao deve estar entre 16 e 128 voxels na maior dimensao.")
     if not 1 <= int(threshold) <= 255:
         raise ValueError("O limiar de contraste deve estar entre 1 e 255.")
 
-    width, depth, height = map(float, (width, depth, height))
+    width, depth, height = dimensions.tolist()
     max_dimension = max(width, depth, height)
     nx = max(2, round(int(resolution) * width / max_dimension))
     ny = max(2, round(int(resolution) * depth / max_dimension))

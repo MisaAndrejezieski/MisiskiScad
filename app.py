@@ -62,7 +62,8 @@ class MisiskiScadApp:
         tk.Label(
             frame,
             text="Use fundo uniforme, objeto centralizado e topo sempre para cima. "
-            "Vistas opostas devem manter a mesma escala.",
+            "Vistas opostas devem manter a mesma escala. Direções: frente/trás, "
+            "esquerda/direita e cima/baixo.",
             wraplength=680,
             justify="center",
         ).pack(pady=(0, 10))
@@ -238,7 +239,7 @@ class MisiskiScadApp:
         frame = self.aba_editar
         
         tk.Label(frame, text="Manipulação Direta de Malha (Vértices e Faces)", font=("Arial", 12, "bold")).pack(pady=10)
-        tk.Label(frame, text="Aqui você pode aplicar modificações matemáticas diretas na última peça gerada.", font=("Arial", 9)).pack(pady=5)
+        tk.Label(frame, text="Ajuste as dimensões da malha ativa ou abra um STL existente.", font=("Arial", 9)).pack(pady=5)
         
         f_info = tk.Frame(frame)
         f_info.pack(pady=15)
@@ -246,14 +247,33 @@ class MisiskiScadApp:
         self.lbl_stats = tk.Label(f_info, text="Nenhuma malha ativa na memória.", font=("Arial", 10), fg="gray")
         self.lbl_stats.pack()
         
-        f_trans = tk.LabelFrame(frame, text=" Operações Geométricas em Lote ", font=("Arial", 10, "bold"))
+        f_trans = tk.LabelFrame(frame, text=" Definir dimensões finais (mm) ", font=("Arial", 10, "bold"))
         f_trans.pack(fill="x", padx=20, pady=10)
-        
-        btn_escala = tk.Button(f_trans, text="Esticar Eixo Z (Altura x1.5)", command=lambda: self.modificar_malha("escala_z"), width=25)
-        btn_escala.pack(pady=5)
+        self.edit_dimension_entries = {}
+        for column, (key, title) in enumerate(
+            (("width", "Largura X"), ("depth", "Profundidade Y"), ("height", "Altura Z"))
+        ):
+            tk.Label(f_trans, text=title + ":").grid(
+                row=0, column=column * 2, padx=6, pady=8
+            )
+            entry = tk.Entry(f_trans, width=9)
+            entry.grid(row=0, column=column * 2 + 1, padx=6, pady=8)
+            self.edit_dimension_entries[key] = entry
+
+        tk.Button(
+            f_trans,
+            text="Aplicar dimensões",
+            command=self.aplicar_dimensoes_malha,
+        ).grid(row=1, column=0, columnspan=6, pady=6)
         
         btn_centralizar = tk.Button(f_trans, text="Centralizar Origem (0,0,0)", command=lambda: self.modificar_malha("centro"), width=25)
-        btn_centralizar.pack(pady=5)
+        btn_centralizar.grid(row=2, column=0, columnspan=6, pady=5)
+
+        tk.Button(
+            frame,
+            text="Abrir malha STL para edição...",
+            command=self.carregar_malha_stl,
+        ).pack(pady=8)
         
         btn_salvar_edit = tk.Button(frame, text="Exportar Malha Editada para .stl", command=self.salvar_malha_atual, bg="#FF9800", fg="white", font=("Arial", 11, "bold"))
         btn_salvar_edit.pack(pady=20)
@@ -324,28 +344,83 @@ class MisiskiScadApp:
             return
         
         if operacao == "escala_z":
-            # Manipulação direta dos vértices no eixo Z
             self.current_mesh.vertices[:, 2] *= 1.5
-            messagebox.Info = messagebox.showinfo("Editado", "Altura dos vértices (Z) multiplicada por 1.5!")
+            messagebox.showinfo("Editado", "Altura dos vértices (Z) multiplicada por 1.5!")
         elif operacao == "centro":
             self.current_mesh.apply_translation(-self.current_mesh.centroid)
             messagebox.showinfo("Editado", "Malha centralizada na origem (0,0,0)!")
             
         self.atualizar_stats_interface()
 
+    def aplicar_dimensoes_malha(self):
+        if self.current_mesh is None:
+            messagebox.showwarning("Aviso", "Nenhuma malha carregada para editar.")
+            return
+        try:
+            target = np.array(
+                [float(self.edit_dimension_entries[key].get()) for key in ("width", "depth", "height")]
+            )
+            current = self.current_mesh.extents
+            if not np.all(np.isfinite(target)) or np.any(target <= 0) or np.any(current <= 0):
+                raise ValueError("As dimensões precisam ser maiores que zero.")
+            scale = target / current
+            bounds = self.current_mesh.bounds
+            center = bounds.mean(axis=0)
+            vertices = self.current_mesh.vertices.copy()
+            vertices[:, :2] = (vertices[:, :2] - center[:2]) * scale[:2] + center[:2]
+            vertices[:, 2] = (vertices[:, 2] - bounds[0, 2]) * scale[2] + bounds[0, 2]
+            self.current_mesh.vertices = vertices
+            self.current_mesh.fix_normals()
+            self.atualizar_stats_interface()
+        except ValueError as error:
+            messagebox.showerror("Dimensões inválidas", str(error))
+
+    def carregar_malha_stl(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("Malhas STL", "*.stl")]
+        )
+        if not path:
+            return
+        try:
+            mesh = trimesh.load_mesh(path, file_type="stl", process=True)
+            if mesh.is_empty or len(mesh.faces) == 0:
+                raise ValueError("O arquivo não contém uma malha STL válida.")
+            self.current_mesh = mesh
+            self.atualizar_stats_interface()
+            messagebox.showinfo("Malha carregada", f"Malha aberta para edição:\n{path}")
+        except (OSError, ValueError, TypeError, IndexError) as error:
+            messagebox.showerror("Erro ao abrir STL", str(error))
+
     def salvar_malha_atual(self):
         if self.current_mesh is None:
             messagebox.showwarning("Aviso", "Nenhuma malha para salvar.")
             return
-        caminho = "exports/malha_editada_customizada.stl"
-        self.current_mesh.export(caminho)
+        caminho = filedialog.asksaveasfilename(
+            title="Exportar malha editada",
+            initialdir="exports",
+            initialfile="malha_editada.stl",
+            defaultextension=".stl",
+            filetypes=[("Modelo STL", "*.stl")],
+        )
+        if not caminho:
+            return
+        try:
+            self.current_mesh.export(caminho)
+        except (OSError, ValueError, TypeError, ImportError) as error:
+            messagebox.showerror("Erro ao salvar STL", str(error))
+            return
         messagebox.showinfo("Salvo", f"Arquivo editado exportado com sucesso para:\n{caminho}")
 
     def atualizar_stats_interface(self):
-        if self.current_mesh:
+        if self.current_mesh is not None:
             v_count = len(self.current_mesh.vertices)
             f_count = len(self.current_mesh.faces)
-            self.lbl_stats.config(text=f"Vértices: {v_count} | Faces (Triângulos): {f_count}", fg="blue")
+            bounds = self.current_mesh.extents
+            self.lbl_stats.config(
+                text=f"Vértices: {v_count} | Faces: {f_count} | "
+                f"Dimensões: {bounds[0]:.1f} × {bounds[1]:.1f} × {bounds[2]:.1f} mm",
+                fg="blue",
+            )
 
 if __name__ == "__main__":
     root = tk.Tk()
