@@ -6,6 +6,8 @@ import numpy as np
 import trimesh
 from PIL import Image
 
+from visual_hull import VIEW_NAMES, reconstruct_visual_hull
+
 
 class MisiskiScadApp:
     def __init__(self, root):
@@ -39,7 +41,99 @@ class MisiskiScadApp:
         self.setup_aba_editar()
 
     def setup_aba_imagem(self):
-        frame = self.aba_img
+        image_tabs = ttk.Notebook(self.aba_img)
+        image_tabs.pack(fill="both", expand=True, padx=8, pady=8)
+
+        self.aba_seis_vistas = ttk.Frame(image_tabs)
+        self.aba_relevo = ttk.Frame(image_tabs)
+        image_tabs.add(self.aba_seis_vistas, text="Reconstrução por 6 vistas")
+        image_tabs.add(self.aba_relevo, text="Relevo de uma imagem")
+
+        self.setup_aba_seis_vistas(self.aba_seis_vistas)
+        self.setup_aba_relevo(self.aba_relevo)
+
+    def setup_aba_seis_vistas(self, frame):
+        self.imagens_vistas = {}
+        tk.Label(
+            frame,
+            text="Selecione seis fotos ortográficas do mesmo objeto",
+            font=("Arial", 12, "bold"),
+        ).pack(pady=(12, 4))
+        tk.Label(
+            frame,
+            text="Use fundo uniforme, objeto centralizado e topo sempre para cima. "
+            "Vistas opostas devem manter a mesma escala.",
+            wraplength=680,
+            justify="center",
+        ).pack(pady=(0, 10))
+
+        views_frame = tk.LabelFrame(frame, text="Imagens")
+        views_frame.pack(fill="x", padx=20, pady=5)
+        for row, name in enumerate(VIEW_NAMES):
+            tk.Label(views_frame, text=name.capitalize() + ":").grid(
+                row=row, column=0, sticky="w", padx=8, pady=3
+            )
+            button = tk.Button(
+                views_frame,
+                text="Selecionar imagem...",
+                command=lambda view=name: self.selecionar_vista(view),
+                width=20,
+            )
+            button.grid(row=row, column=1, padx=6, pady=3)
+            label = tk.Label(views_frame, text="Não selecionada", anchor="w")
+            label.grid(row=row, column=2, sticky="ew", padx=6, pady=3)
+            self.imagens_vistas[name] = {"path": None, "label": label}
+        views_frame.columnconfigure(2, weight=1)
+
+        dimensions = ttk.LabelFrame(frame, text="Dimensões finais aproximadas (mm)")
+        dimensions.pack(fill="x", padx=20, pady=8)
+        self.dimension_entries = {}
+        for column, (key, title, initial) in enumerate(
+            (("width", "Largura X", "50"), ("depth", "Profundidade Y", "50"), ("height", "Altura Z", "50"))
+        ):
+            tk.Label(dimensions, text=title + ":").grid(
+                row=0, column=column * 2, padx=6, pady=8
+            )
+            entry = tk.Entry(dimensions, width=9)
+            entry.insert(0, initial)
+            entry.grid(row=0, column=column * 2 + 1, padx=6, pady=8)
+            self.dimension_entries[key] = entry
+
+        settings = ttk.Frame(frame)
+        settings.pack(fill="x", padx=20, pady=3)
+        tk.Label(settings, text="Resolução (maior eixo):").pack(side="left")
+        self.resolution_entry = tk.Spinbox(
+            settings, from_=16, to=128, increment=8, width=6
+        )
+        self.resolution_entry.delete(0, "end")
+        self.resolution_entry.insert(0, "64")
+        self.resolution_entry.pack(side="left", padx=(5, 16))
+        tk.Label(settings, text="Limiar do fundo (1–255):").pack(side="left")
+        self.threshold_entry = tk.Spinbox(
+            settings, from_=1, to=255, increment=5, width=6
+        )
+        self.threshold_entry.delete(0, "end")
+        self.threshold_entry.insert(0, "30")
+        self.threshold_entry.pack(side="left", padx=5)
+
+        tk.Button(
+            frame,
+            text="Reconstruir modelo 3D e salvar STL...",
+            command=self.reconstruir_seis_vistas,
+            bg="#4CAF50",
+            fg="white",
+            font=("Arial", 11, "bold"),
+        ).pack(pady=12)
+        tk.Label(
+            frame,
+            text="Aviso: o casco visual estima o volume externo; não recupera cavidades "
+            "ou detalhes ocultos. A malha gerada é editável por escala e transformação.",
+            wraplength=700,
+            justify="center",
+            fg="#555555",
+        ).pack(padx=16, pady=(0, 8))
+
+    def setup_aba_relevo(self, frame):
         self.caminho_imagem = None
         
         btn_carregar = tk.Button(frame, text="Carregar Imagem (PNG/JPG)", command=self.carregar_imagem, width=30, bg="#2196F3", fg="white", font=("Arial", 10, "bold"))
@@ -58,6 +152,62 @@ class MisiskiScadApp:
         
         btn_conv = tk.Button(frame, text="Converter Imagem em 3D e Salvar STL", command=self.converter_imagem_3d, bg="#4CAF50", fg="white", font=("Arial", 11, "bold"))
         btn_conv.pack(pady=20)
+
+    def selecionar_vista(self, view):
+        path = filedialog.askopenfilename(
+            filetypes=[("Imagens", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff")]
+        )
+        if path:
+            self.imagens_vistas[view]["path"] = path
+            self.imagens_vistas[view]["label"].config(text=os.path.basename(path))
+
+    def reconstruir_seis_vistas(self):
+        image_paths = {
+            name: selection["path"] for name, selection in self.imagens_vistas.items()
+        }
+        missing = [name for name, path in image_paths.items() if not path]
+        if missing:
+            messagebox.showwarning(
+                "Imagens faltando",
+                "Selecione as seis vistas: " + ", ".join(missing) + ".",
+            )
+            return
+
+        output_path = filedialog.asksaveasfilename(
+            title="Salvar modelo reconstruído",
+            initialdir="exports",
+            initialfile="modelo_6_vistas.stl",
+            defaultextension=".stl",
+            filetypes=[("Modelo STL", "*.stl")],
+        )
+        if not output_path:
+            return
+
+        try:
+            dimensions = {
+                name: float(entry.get())
+                for name, entry in self.dimension_entries.items()
+            }
+            mesh, grid_shape = reconstruct_visual_hull(
+                image_paths,
+                dimensions["width"],
+                dimensions["depth"],
+                dimensions["height"],
+                resolution=int(self.resolution_entry.get()),
+                threshold=int(self.threshold_entry.get()),
+            )
+            mesh.export(output_path)
+            self.current_mesh = mesh
+            self.atualizar_stats_interface()
+            self.notebook.select(self.aba_editar)
+            messagebox.showinfo(
+                "Modelo criado",
+                f"Malha reconstruída e salva em:\n{output_path}\n\n"
+                f"Grade: {grid_shape[0]} × {grid_shape[1]} × {grid_shape[2]} voxels\n"
+                f"Vértices: {len(mesh.vertices)} | Faces: {len(mesh.faces)}",
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            messagebox.showerror("Erro na reconstrução", str(error))
 
     def setup_aba_formas(self):
         frame = self.aba_formas
