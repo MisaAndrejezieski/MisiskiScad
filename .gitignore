@@ -1,0 +1,25 @@
+# Ambiente virtual Python
+.venv/
+env/
+venv/
+ENV/
+
+# Cache do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Arquivos de distribuição e build
+build/
+dist/
+*.egg-info/
+
+# Pasta de exportação de stl locais (evita commitar arquivos gerados de teste)
+exports/*.stl
+exports/
+
+# IDEs e Editores (VS Code, PyCharm)
+.vscode/
+.idea/
+*.swp
+*.swo
