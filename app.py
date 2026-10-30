@@ -4,7 +4,8 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 import trimesh
-from PIL import Image, ImageTk
+from PIL import Image
+from scipy.ndimage import find_objects
 
 
 class MisiskiScadApp:
@@ -13,27 +14,22 @@ class MisiskiScadApp:
         self.root.title("MisiskiScad - Modelador 3D Paramétrico para Bambu Studio")
         self.root.geometry("750x600")
         
-        # Garante pasta de exportações
         os.makedirs("exports", exist_ok=True)
         os.makedirs("assets", exist_ok=True)
         
         self.criar_interface()
 
     def criar_interface(self):
-        # Título principal
         titulo = tk.Label(self.root, text="MisiskiScad - Gerador de STL", font=("Arial", 16, "bold"))
         titulo.pack(pady=10)
         
-        # Notebook (Abas) para separar Formas Paramétricas e Conversão de Imagem
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
         
-        # Aba 1: Formas Paramétricas e Tampas
         self.aba_formas = ttk.Frame(self.notebook)
         self.notebook.add(self.aba_formas, text="Formas & Tampas")
         self.setup_aba_formas()
         
-        # Aba 2: Imagem para STL (Image to 3D)
         self.aba_imagem = ttk.Frame(self.notebook)
         self.notebook.add(self.aba_imagem, text="Imagem para STL")
         self.setup_aba_imagem()
@@ -65,7 +61,6 @@ class MisiskiScadApp:
 
     def setup_aba_imagem(self):
         frame = self.aba_imagem
-        
         self.caminho_imagem = None
         
         btn_carregar = tk.Button(frame, text="Selecionar Imagem (PNG/JPG)", command=self.carregar_imagem, width=25)
@@ -82,15 +77,14 @@ class MisiskiScadApp:
         self.entry_altura_img.insert(0, "5.0")
         self.entry_altura_img.grid(row=0, column=1, sticky="w", padx=5, pady=5)
         
-        btn_converter = tk.Button(frame, text="Converter Imagem em STL 3D", bg="#2196F3", fg="white", font=("Arial", 11, "bold"), command=self.converter_imagem_para_stl)
+        btn_converter = tk.Button(frame, text="Converter Imagem Real em STL 3D", bg="#2196F3", fg="white", font=("Arial", 11, "bold"), command=self.converter_imagem_para_stl)
         btn_converter.pack(pady=20)
 
     def carregar_imagem(self):
         file_path = filedialog.askopenfilename(filetypes=[("Imagens", "*.png *.jpg *.jpeg")])
         if file_path:
             self.caminho_imagem = file_path
-            nome_arquivo = os.path.basename(file_path)
-            self.lbl_info_img.config(text=f"Selecionado: {nome_arquivo}")
+            self.lbl_info_img.config(text=f"Selecionado: {os.path.basename(file_path)}")
 
     def gerar_forma_geometrica(self):
         try:
@@ -107,16 +101,15 @@ class MisiskiScadApp:
                 mesh = trimesh.creation.extrude_polygon(trimesh.path.Polygon(vertices_2d), height=altura)
                 nome_saida = f"exports/poligono_{lados}lados.stl"
             else:
-                # Tampa paramétrica simples
                 externo = trimesh.creation.extrude_polygon(trimesh.path.Polygon(np.column_stack((medida * np.cos(np.linspace(0, 2*np.pi, lados, endpoint=False)), medida * np.sin(np.linspace(0, 2*np.pi, lados, endpoint=False))))), height=2.0)
                 borda = trimesh.creation.extrude_polygon(trimesh.path.Polygon(np.column_stack(((medida-2) * np.cos(np.linspace(0, 2*np.pi, lados, endpoint=False)), (medida-2) * np.sin(np.linspace(0, 2*np.pi, lados, endpoint=False))))), height=altura)
                 mesh = trimesh.util.concatenate([externo, borda])
                 nome_saida = "exports/tampa_parametrica.stl"
                 
             mesh.export(nome_saida)
-            messagebox.Sucesso = messagebox.showinfo("Sucesso", f"Arquivo gerado com sucesso!\nSalvo em: {nome_saida}\nPode abrir no Bambu Studio.")
+            messagebox.showinfo("Sucesso", f"Arquivo gerado com sucesso!\nSalvo em: {nome_saida}")
         except Exception as e:
-            messagebox.showerror("Erro", f"Ocorreu um erro ao gerar a peça: {str(e)}")
+            messagebox.showerror("Erro", f"Erro: {str(e)}")
 
     def converter_imagem_para_stl(self):
         if not self.caminho_imagem:
@@ -126,21 +119,44 @@ class MisiskiScadApp:
         try:
             altura_extrusao = float(self.entry_altura_img.get())
             
-            # Carrega a imagem e converte para preto e branco (escala de cinza)
+            # Carrega a imagem e converte para preto e branco, redimensionando para performance
             img = Image.open(self.caminho_imagem).convert("L")
-            # Reduz a resolução para otimizar os polígonos da malha STL para impressão 3D
-            img = img.resize((64, 64))
-            matriz = np.array(img)
+            img = img.resize((100, 100))
+            pixels = np.array(img)
             
-            # Cria um plano extrudado baseado nos pixels da imagem
-            mesh = trimesh.creation.box(extents=[64, 64, altura_extrusao])
+            # Cria uma máscara binária baseada no contraste (considera escuro como desenho e claro como fundo)
+            limiar = 128
+            mascara = pixels < limiar
             
-            nome_saida = "exports/imagem_convertida_3d.stl"
+            if not np.any(mascara):
+                # Fallback caso a imagem seja toda branca
+                mascara = pixels < 255
+
+            # Cria um array de pontos 2D baseados nos pixels ativos da figura da imagem
+            y_indices, x_indices = np.where(mascara)
+            pontos = np.column_stack((x_indices, y_indices))
+            
+            if len(pontos) < 3:
+                messagebox.showerror("Erro", "A imagem é muito uniforme ou não foi possível detetar o formato.")
+                return
+
+            # Cria um hull/contorno poligonal em volta dos pixels da imagem enviada
+            from scipy.spatial import ConvexHull
+            hull = ConvexHull(pontos)
+            vertices_contorno = pontos[hull.vertices]
+            
+            # Centraliza a geometria
+            vertices_contorno = vertices_contorno - vertices_contorno.mean(axis=0)
+            
+            polygon_2d = trimesh.path.Polygon(vertices_contorno)
+            mesh = trimesh.creation.extrude_polygon(polygon_2d, height=altura_extrusao)
+            
+            nome_saida = "exports/imagem_customizada_3d.stl"
             mesh.export(nome_saida)
             
-            messagebox.showinfo("Sucesso", f"Imagem convertida em STL!\nSalvo em: {nome_saida}")
+            messagebox.showinfo("Sucesso", f"Contorno da imagem convertido em STL real!\nSalvo em: {nome_saida}")
         except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao converter imagem: {str(e)}")
+            messagebox.showerror("Erro", f"Erro ao converter o formato da imagem: {str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()
