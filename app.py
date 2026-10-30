@@ -5,7 +5,8 @@ from tkinter import filedialog, messagebox, ttk
 import numpy as np
 import trimesh
 from PIL import Image
-from scipy.ndimage import find_objects
+from scipy.spatial import ConvexHull
+from shapely.geometry import Polygon
 
 
 class MisiskiScadApp:
@@ -98,11 +99,16 @@ class MisiskiScadApp:
                 x = medida * np.cos(angulos)
                 y = medida * np.sin(angulos)
                 vertices_2d = np.column_stack((x, y))
-                mesh = trimesh.creation.extrude_polygon(trimesh.path.Polygon(vertices_2d), height=altura)
+                poly = Polygon(vertices_2d)
+                mesh = trimesh.creation.extrude_polygon(poly, height=altura)
                 nome_saida = f"exports/poligono_{lados}lados.stl"
             else:
-                externo = trimesh.creation.extrude_polygon(trimesh.path.Polygon(np.column_stack((medida * np.cos(np.linspace(0, 2*np.pi, lados, endpoint=False)), medida * np.sin(np.linspace(0, 2*np.pi, lados, endpoint=False))))), height=2.0)
-                borda = trimesh.creation.extrude_polygon(trimesh.path.Polygon(np.column_stack(((medida-2) * np.cos(np.linspace(0, 2*np.pi, lados, endpoint=False)), (medida-2) * np.sin(np.linspace(0, 2*np.pi, lados, endpoint=False))))), height=altura)
+                angulos = np.linspace(0, 2 * np.pi, lados, endpoint=False)
+                ext_v = np.column_stack((medida * np.cos(angulos), medida * np.sin(angulos)))
+                int_v = np.column_stack(((medida - 2) * np.cos(angulos), (medida - 2) * np.sin(angulos)))
+                
+                externo = trimesh.creation.extrude_polygon(Polygon(ext_v), height=2.0)
+                borda = trimesh.creation.extrude_polygon(Polygon(int_v), height=altura)
                 mesh = trimesh.util.concatenate([externo, borda])
                 nome_saida = "exports/tampa_parametrica.stl"
                 
@@ -119,20 +125,16 @@ class MisiskiScadApp:
         try:
             altura_extrusao = float(self.entry_altura_img.get())
             
-            # Carrega a imagem e converte para preto e branco, redimensionando para performance
+            # Carrega a imagem, converte para escala de cinza e redimensiona
             img = Image.open(self.caminho_imagem).convert("L")
-            img = img.resize((100, 100))
+            img = img.resize((120, 120))
             pixels = np.array(img)
             
-            # Cria uma máscara binária baseada no contraste (considera escuro como desenho e claro como fundo)
-            limiar = 128
-            mascara = pixels < limiar
-            
+            # Máscara binária baseada no contraste
+            mascara = pixels < 128
             if not np.any(mascara):
-                # Fallback caso a imagem seja toda branca
                 mascara = pixels < 255
 
-            # Cria um array de pontos 2D baseados nos pixels ativos da figura da imagem
             y_indices, x_indices = np.where(mascara)
             pontos = np.column_stack((x_indices, y_indices))
             
@@ -140,15 +142,13 @@ class MisiskiScadApp:
                 messagebox.showerror("Erro", "A imagem é muito uniforme ou não foi possível detetar o formato.")
                 return
 
-            # Cria um hull/contorno poligonal em volta dos pixels da imagem enviada
-            from scipy.spatial import ConvexHull
+            # Cria o contorno poligonal em volta da figura real da imagem
             hull = ConvexHull(pontos)
             vertices_contorno = pontos[hull.vertices]
-            
-            # Centraliza a geometria
             vertices_contorno = vertices_contorno - vertices_contorno.mean(axis=0)
             
-            polygon_2d = trimesh.path.Polygon(vertices_contorno)
+            # Utiliza o Polygon do Shapely corretamente
+            polygon_2d = Polygon(vertices_contorno)
             mesh = trimesh.creation.extrude_polygon(polygon_2d, height=altura_extrusao)
             
             nome_saida = "exports/imagem_customizada_3d.stl"
